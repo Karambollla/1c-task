@@ -32,7 +32,11 @@ func main() {
 	}
 }
 
-type connection struct{ addr, id, secret string }
+type connection struct {
+	addr   string
+	id     string
+	secret string
+}
 
 func common(fs *flag.FlagSet) *connection {
 	c := &connection{}
@@ -41,6 +45,7 @@ func common(fs *flag.FlagSet) *connection {
 	fs.StringVar(&c.secret, "secret", "", "client secret")
 	return c
 }
+
 func (c connection) call(req edition.Request) (edition.Response, error) {
 	return edition.Send(c.addr, edition.Request{Type: "hello", ClientID: c.id, Secret: c.secret}, req)
 }
@@ -56,7 +61,13 @@ func submit(args []string) {
 	if *note == "" {
 		*note = newUUID()
 	}
-	resp, err := c.call(edition.Request{Type: "submit", NoteID: *note, Section: *section, Topic: *topic, OccurredAt: *occurred})
+	resp, err := c.call(edition.Request{
+		Type:       "submit",
+		NoteID:     *note,
+		Section:    *section,
+		Topic:      *topic,
+		OccurredAt: *occurred,
+	})
 	if err != nil {
 		fatal("submit note", "error", err)
 	}
@@ -102,7 +113,17 @@ func stats(args []string) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "CLIENT\tACCEPTED\tPRINTED\tSHARE\tSTORIES\tSENSATIONS\tAVG RANK")
 	for _, s := range resp.Stats {
-		fmt.Fprintf(w, "%s\t%d\t%d\t%.2f%%\t%d\t%d\t%.2f\n", s.ClientID, s.Accepted, s.Printed, s.Share*100, s.Stories, s.Sensations, s.AverageRank)
+		fmt.Fprintf(
+			w,
+			"%s\t%d\t%d\t%.2f%%\t%d\t%d\t%.2f\n",
+			s.ClientID,
+			s.Accepted,
+			s.Printed,
+			s.Share*100,
+			s.Stories,
+			s.Sensations,
+			s.AverageRank,
+		)
 	}
 	w.Flush()
 }
@@ -117,6 +138,7 @@ func newUUID() string {
 	h := hex.EncodeToString(b)
 	return h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:]
 }
+
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: edition-client <submit|inbox|stats>")
 	fmt.Fprintln(os.Stderr, "occurred-at example:", time.Now().UTC().Format(time.RFC3339))

@@ -21,8 +21,18 @@ type Store struct {
 	now func() time.Time
 }
 
+type publication struct {
+	storyID    int64
+	section    string
+	topic      string
+	releasedAt time.Time
+}
+
 func Open(path string, cfg Config) (*Store, error) {
-	db, err := sql.Open("sqlite", path+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
+	db, err := sql.Open(
+		"sqlite",
+		path+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)",
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +101,15 @@ func (s *Store) CreateUser(ctx context.Context, id, role, secret string, trust f
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO users(id,role,secret_hash,trust,created_at) VALUES(?,?,?,?,?)`, id, role, hash, trust, stamp(s.now()))
+	_, err = s.db.ExecContext(
+		ctx,
+		`INSERT INTO users(id,role,secret_hash,trust,created_at) VALUES(?,?,?,?,?)`,
+		id,
+		role,
+		hash,
+		trust,
+		stamp(s.now()),
+	)
 	return err
 }
 
@@ -140,19 +158,29 @@ func parseStamp(v string) (time.Time, error) {
 	return time.Parse(time.RFC3339Nano, v)
 }
 
-func (s *Store) Submit(ctx context.Context, clientID, noteID, section, topic, occurredRaw string) (Receipt, error) {
-	if noteID == "" {
+func (s *Store) Submit(ctx context.Context, submission domain.Submission) (Receipt, error) {
+	if submission.NoteID == "" {
 		return Receipt{Status: "rejected", Reason: "note_id is required"}, nil
 	}
-	if section == "" || topic == "" {
-		return s.recordRejected(ctx, clientID, noteID, fingerprint(section, topic, occurredRaw), "section and topic are required")
+	if submission.Section == "" || submission.Topic == "" {
+		return s.recordRejected(
+			ctx,
+			submission,
+			fingerprint(submission.Section, submission.Topic, submission.OccurredAt),
+			"section and topic are required",
+		)
 	}
 	now := s.now().UTC()
-	eventAt, err := domain.ValidateOccurredAt(occurredRaw, now)
+	eventAt, err := domain.ValidateOccurredAt(submission.OccurredAt, now)
 	if err != nil {
-		return s.recordRejected(ctx, clientID, noteID, fingerprint(section, topic, occurredRaw), err.Error())
+		return s.recordRejected(
+			ctx,
+			submission,
+			fingerprint(submission.Section, submission.Topic, submission.OccurredAt),
+			err.Error(),
+		)
 	}
-	fp := fingerprint(section, topic, occurredRaw)
+	fp := fingerprint(submission.Section, submission.Topic, submission.OccurredAt)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Receipt{}, err
@@ -160,45 +188,102 @@ func (s *Store) Submit(ctx context.Context, clientID, noteID, section, topic, oc
 	defer tx.Rollback()
 	var oldFP, oldStatus, oldReason string
 	var oldStory sql.NullInt64
-	err = tx.QueryRowContext(ctx, `SELECT fingerprint,status,reason,story_id FROM notes WHERE client_id=? AND note_id=?`, clientID, noteID).Scan(&oldFP, &oldStatus, &oldReason, &oldStory)
+	err = tx.QueryRowContext(
+		ctx,
+		`SELECT fingerprint,status,reason,story_id FROM notes WHERE client_id=? AND note_id=?`,
+		submission.ClientID,
+		submission.NoteID,
+	).Scan(&oldFP, &oldStatus, &oldReason, &oldStory)
 	if err == nil {
 		if oldFP != fp {
-			return Receipt{Status: "rejected", NoteID: noteID, Reason: "note_id was already used with different data"}, nil
+			return Receipt{
+				Status: "rejected",
+				NoteID: submission.NoteID,
+				Reason: "note_id was already used with different data",
+			}, nil
 		}
-		return Receipt{Status: "duplicate", NoteID: noteID, Reason: oldReason, StoryID: oldStory.Int64}, nil
+		return Receipt{
+			Status:  "duplicate",
+			NoteID:  submission.NoteID,
+			Reason:  oldReason,
+			StoryID: oldStory.Int64,
+		}, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Receipt{}, err
 	}
 	var trust float64
-	if err := tx.QueryRowContext(ctx, `SELECT trust FROM users WHERE id=? AND role=?`, clientID, RoleReporter).Scan(&trust); err != nil {
+	if err := tx.QueryRowContext(
+		ctx,
+		`SELECT trust FROM users WHERE id=? AND role=?`,
+		submission.ClientID,
+		RoleReporter,
+	).Scan(&trust); err != nil {
 		return Receipt{}, errors.New("only reporters may submit notes")
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO stories(section,topic,created_at) VALUES(?,?,?) ON CONFLICT(section,topic) DO NOTHING`, section, topic, stamp(now))
+	_, err = tx.ExecContext(
+		ctx,
+		`INSERT INTO stories(section,topic,created_at) VALUES(?,?,?) ON CONFLICT(section,topic) DO NOTHING`,
+		submission.Section,
+		submission.Topic,
+		stamp(now),
+	)
 	if err != nil {
 		return Receipt{}, err
 	}
 	var storyID int64
-	if err = tx.QueryRowContext(ctx, `SELECT id FROM stories WHERE section=? AND topic=?`, section, topic).Scan(&storyID); err != nil {
+	if err = tx.QueryRowContext(
+		ctx,
+		`SELECT id FROM stories WHERE section=? AND topic=?`,
+		submission.Section,
+		submission.Topic,
+	).Scan(&storyID); err != nil {
 		return Receipt{}, err
 	}
-	r, err := tx.ExecContext(ctx, `INSERT INTO notes(client_id,note_id,fingerprint,status,story_id,event_at,received_at) VALUES(?,?,?,?,?,?,?)`, clientID, noteID, fp, "accepted", storyID, stamp(eventAt), stamp(now))
+	r, err := tx.ExecContext(
+		ctx,
+		`INSERT INTO notes(client_id,note_id,fingerprint,status,story_id,event_at,received_at) VALUES(?,?,?,?,?,?,?)`,
+		submission.ClientID,
+		submission.NoteID,
+		fp,
+		"accepted",
+		storyID,
+		stamp(eventAt),
+		stamp(now),
+	)
 	if err != nil {
 		return Receipt{}, err
 	}
 	notePK, _ := r.LastInsertId()
 	var published int
-	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM publications WHERE story_id=?)`, storyID).Scan(&published); err != nil {
+	if err = tx.QueryRowContext(
+		ctx,
+		`SELECT EXISTS(SELECT 1 FROM publications WHERE story_id=?)`,
+		storyID,
+	).Scan(&published); err != nil {
 		return Receipt{}, err
 	}
 	score := 0.0
 	if published == 0 {
 		var exists int
-		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM voices WHERE story_id=? AND client_id=?)`, storyID, clientID).Scan(&exists); err != nil {
+		if err = tx.QueryRowContext(
+			ctx,
+			`SELECT EXISTS(SELECT 1 FROM voices WHERE story_id=? AND client_id=?)`,
+			storyID,
+			submission.ClientID,
+		).Scan(&exists); err != nil {
 			return Receipt{}, err
 		}
 		if exists == 0 {
-			if _, err = tx.ExecContext(ctx, `INSERT INTO voices(story_id,client_id,first_note_pk,trust_snapshot,event_at) VALUES(?,?,?,?,?)`, storyID, clientID, notePK, trust, stamp(eventAt)); err != nil {
+			if _, err = tx.ExecContext(
+				ctx,
+				`INSERT INTO voices(story_id,client_id,first_note_pk,trust_snapshot,event_at) VALUES(?,?,?,?,?)`,
+				storyID,
+				submission.ClientID,
+				notePK,
+				trust,
+				stamp(eventAt),
+			); err != nil {
 				return Receipt{}, err
 			}
 		}
@@ -207,10 +292,22 @@ func (s *Store) Submit(ctx context.Context, clientID, noteID, section, topic, oc
 			return Receipt{}, err
 		}
 		if score >= s.cfg.Threshold {
-			if _, err = tx.ExecContext(ctx, `INSERT INTO publications(story_id,trigger_note_pk,released_at,score) VALUES(?,?,?,?)`, storyID, notePK, stamp(now), score); err != nil {
+			if _, err = tx.ExecContext(
+				ctx,
+				`INSERT INTO publications(story_id,trigger_note_pk,released_at,score) VALUES(?,?,?,?)`,
+				storyID,
+				notePK,
+				stamp(now),
+				score,
+			); err != nil {
 				return Receipt{}, err
 			}
-			if err = s.enqueueCongratulations(ctx, tx, storyID, section, topic, now); err != nil {
+			if err = s.enqueueCongratulations(ctx, tx, publication{
+				storyID:    storyID,
+				section:    submission.Section,
+				topic:      submission.Topic,
+				releasedAt: now,
+			}); err != nil {
 				return Receipt{}, err
 			}
 		}
@@ -218,11 +315,16 @@ func (s *Store) Submit(ctx context.Context, clientID, noteID, section, topic, oc
 	if err = tx.Commit(); err != nil {
 		return Receipt{}, err
 	}
-	return Receipt{Status: "accepted", NoteID: noteID, StoryID: storyID, Score: score}, nil
+	return Receipt{
+		Status:  "accepted",
+		NoteID:  submission.NoteID,
+		StoryID: storyID,
+		Score:   score,
+	}, nil
 }
 
-func (s *Store) recordRejected(ctx context.Context, clientID, noteID, fp, reason string) (Receipt, error) {
-	if noteID == "" {
+func (s *Store) recordRejected(ctx context.Context, submission domain.Submission, fp, reason string) (Receipt, error) {
+	if submission.NoteID == "" {
 		return Receipt{Status: "rejected", Reason: reason}, nil
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -231,24 +333,42 @@ func (s *Store) recordRejected(ctx context.Context, clientID, noteID, fp, reason
 	}
 	defer tx.Rollback()
 	var oldFP string
-	err = tx.QueryRowContext(ctx, `SELECT fingerprint FROM notes WHERE client_id=? AND note_id=?`, clientID, noteID).Scan(&oldFP)
+	err = tx.QueryRowContext(
+		ctx,
+		`SELECT fingerprint FROM notes WHERE client_id=? AND note_id=?`,
+		submission.ClientID,
+		submission.NoteID,
+	).Scan(&oldFP)
 	if err == nil {
 		if oldFP == fp {
-			return Receipt{Status: "duplicate", NoteID: noteID}, nil
+			return Receipt{Status: "duplicate", NoteID: submission.NoteID}, nil
 		}
-		return Receipt{Status: "rejected", NoteID: noteID, Reason: "note_id was already used with different data"}, nil
+		return Receipt{
+			Status: "rejected",
+			NoteID: submission.NoteID,
+			Reason: "note_id was already used with different data",
+		}, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Receipt{}, err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO notes(client_id,note_id,fingerprint,status,reason,received_at) VALUES(?,?,?,?,?,?)`, clientID, noteID, fp, "rejected", reason, stamp(s.now()))
+	_, err = tx.ExecContext(
+		ctx,
+		`INSERT INTO notes(client_id,note_id,fingerprint,status,reason,received_at) VALUES(?,?,?,?,?,?)`,
+		submission.ClientID,
+		submission.NoteID,
+		fp,
+		"rejected",
+		reason,
+		stamp(s.now()),
+	)
 	if err != nil {
 		return Receipt{}, err
 	}
 	if err = tx.Commit(); err != nil {
 		return Receipt{}, err
 	}
-	return Receipt{Status: "rejected", NoteID: noteID, Reason: reason}, nil
+	return Receipt{Status: "rejected", NoteID: submission.NoteID, Reason: reason}, nil
 }
 
 func (s *Store) scoreTx(ctx context.Context, tx *sql.Tx, storyID int64, now time.Time) (float64, error) {
@@ -276,8 +396,13 @@ func (s *Store) scoreTx(ctx context.Context, tx *sql.Tx, storyID int64, now time
 	return domain.Score(contributions, now, s.cfg.HalfLife), nil
 }
 
-func (s *Store) enqueueCongratulations(ctx context.Context, tx *sql.Tx, storyID int64, section, topic string, now time.Time) error {
-	rows, err := tx.QueryContext(ctx, `SELECT client_id FROM voices WHERE story_id=? ORDER BY first_note_pk LIMIT ?`, storyID, s.cfg.Congratulations)
+func (s *Store) enqueueCongratulations(ctx context.Context, tx *sql.Tx, publication publication) error {
+	rows, err := tx.QueryContext(
+		ctx,
+		`SELECT client_id FROM voices WHERE story_id=? ORDER BY first_note_pk LIMIT ?`,
+		publication.storyID,
+		s.cfg.Congratulations,
+	)
 	if err != nil {
 		return err
 	}
@@ -294,8 +419,21 @@ func (s *Store) enqueueCongratulations(ctx context.Context, tx *sql.Tx, storyID 
 		return err
 	}
 	for rank, id := range ids {
-		text := fmt.Sprintf("Поздравляем, ваша заметка попала в печать. Вы были %d-м, кто сказал нам об этой новости: [%s] %s.", rank+1, section, topic)
-		if _, err = tx.ExecContext(ctx, `INSERT INTO outbox(client_id,kind,text,created_at) VALUES(?,?,?,?)`, id, "congratulation", text, stamp(now)); err != nil {
+		text := fmt.Sprintf(
+			"Поздравляем, ваша заметка попала в печать. Вы были %d-м, "+
+				"кто сказал нам об этой новости: [%s] %s.",
+			rank+1,
+			publication.section,
+			publication.topic,
+		)
+		if _, err = tx.ExecContext(
+			ctx,
+			`INSERT INTO outbox(client_id,kind,text,created_at) VALUES(?,?,?,?)`,
+			id,
+			"congratulation",
+			text,
+			stamp(publication.releasedAt),
+		); err != nil {
 			return err
 		}
 	}
@@ -303,7 +441,11 @@ func (s *Store) enqueueCongratulations(ctx context.Context, tx *sql.Tx, storyID 
 }
 
 func (s *Store) Pending(ctx context.Context, clientID string) ([]Notification, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,kind,text,created_at FROM outbox WHERE client_id=? AND acknowledged_at IS NULL ORDER BY id`, clientID)
+	rows, err := s.db.QueryContext(
+		ctx,
+		`SELECT id,kind,text,created_at FROM outbox WHERE client_id=? AND acknowledged_at IS NULL ORDER BY id`,
+		clientID,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -320,8 +462,15 @@ func (s *Store) Pending(ctx context.Context, clientID string) ([]Notification, e
 	}
 	return out, rows.Err()
 }
+
 func (s *Store) Ack(ctx context.Context, clientID string, id int64) error {
-	r, err := s.db.ExecContext(ctx, `UPDATE outbox SET acknowledged_at=? WHERE id=? AND client_id=? AND acknowledged_at IS NULL`, stamp(s.now()), id, clientID)
+	r, err := s.db.ExecContext(
+		ctx,
+		`UPDATE outbox SET acknowledged_at=? WHERE id=? AND client_id=? AND acknowledged_at IS NULL`,
+		stamp(s.now()),
+		id,
+		clientID,
+	)
 	if err != nil {
 		return err
 	}
@@ -378,13 +527,26 @@ func (s *Store) Stats(ctx context.Context, caller string, all bool) ([]ClientSta
 
 func (s *Store) statsFor(ctx context.Context, id string) (ClientStats, error) {
 	st := ClientStats{ClientID: id}
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM notes WHERE client_id=? AND status='accepted'`, id).Scan(&st.Accepted); err != nil {
+	if err := s.db.QueryRowContext(
+		ctx,
+		`SELECT COUNT(*) FROM notes WHERE client_id=? AND status='accepted'`,
+		id,
+	).Scan(&st.Accepted); err != nil {
 		return st, err
 	}
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM notes n JOIN publications p ON p.story_id=n.story_id WHERE n.client_id=? AND n.status='accepted' AND n.id<=p.trigger_note_pk`, id).Scan(&st.Printed); err != nil {
+	if err := s.db.QueryRowContext(
+		ctx,
+		`SELECT COUNT(*) FROM notes n JOIN publications p ON p.story_id=n.story_id
+		 WHERE n.client_id=? AND n.status='accepted' AND n.id<=p.trigger_note_pk`,
+		id,
+	).Scan(&st.Printed); err != nil {
 		return st, err
 	}
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT story_id) FROM notes WHERE client_id=? AND status='accepted'`, id).Scan(&st.Stories); err != nil {
+	if err := s.db.QueryRowContext(
+		ctx,
+		`SELECT COUNT(DISTINCT story_id) FROM notes WHERE client_id=? AND status='accepted'`,
+		id,
+	).Scan(&st.Stories); err != nil {
 		return st, err
 	}
 	if st.Accepted > 0 {

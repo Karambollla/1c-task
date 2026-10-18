@@ -58,6 +58,7 @@ func initDB(args []string) {
 	}
 	fmt.Println("database initialized")
 }
+
 func clientAdmin(args []string) {
 	if len(args) < 1 {
 		fatal("expected client add or client trust")
@@ -98,6 +99,7 @@ func clientAdmin(args []string) {
 		fatal("expected client add or client trust")
 	}
 }
+
 func serve(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	db := base(fs)
@@ -119,11 +121,18 @@ func serve(args []string) {
 	if err != nil {
 		fatal("listen", "address", *addr, "error", err)
 	}
-	slog.Info("edition server listening", "address", ln.Addr(), "threshold", cfg.Threshold, "half_life", cfg.HalfLife, "congratulations", cfg.Congratulations)
+	slog.Info(
+		"edition server listening",
+		"address", ln.Addr(),
+		"threshold", cfg.Threshold,
+		"half_life", cfg.HalfLife,
+		"congratulations", cfg.Congratulations,
+	)
 	if err := (&edition.Server{Application: application.New(s)}).Serve(ln); err != nil {
 		fatal("serve", "error", err)
 	}
 }
+
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: edition-server <init|serve|client>")
 }

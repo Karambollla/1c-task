@@ -8,9 +8,12 @@ import (
 	"net"
 
 	"edition/internal/application"
+	"edition/internal/domain"
 )
 
-type Server struct{ Application *application.Service }
+type Server struct {
+	Application *application.Service
+}
 
 func (s *Server) Serve(listener net.Listener) error {
 	for {
@@ -64,7 +67,13 @@ func (s *Server) dispatch(ctx context.Context, clientID, role string, req Reques
 		if role != RoleReporter {
 			return Response{Type: "receipt", Error: "only reporters may submit notes"}
 		}
-		r, err := s.Application.Submit(ctx, clientID, req.NoteID, req.Section, req.Topic, req.OccurredAt)
+		r, err := s.Application.Submit(ctx, domain.Submission{
+			ClientID:   clientID,
+			NoteID:     req.NoteID,
+			Section:    req.Section,
+			Topic:      req.Topic,
+			OccurredAt: req.OccurredAt,
+		})
 		if err != nil {
 			return Response{Type: "receipt", Error: err.Error()}
 		}

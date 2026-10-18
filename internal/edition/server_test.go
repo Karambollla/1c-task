@@ -38,11 +38,19 @@ func TestTCPHandshakeAndRolePermissions(t *testing.T) {
 		t.Fatalf("working message before hello was accepted: %#v", denied)
 	}
 
-	_, err = Send(ln.Addr().String(), Request{Type: "hello", ClientID: "reporter", Secret: "reporter-secret"}, Request{Type: "stats", All: true})
+	_, err = Send(
+		ln.Addr().String(),
+		Request{Type: "hello", ClientID: "reporter", Secret: "reporter-secret"},
+		Request{Type: "stats", All: true},
+	)
 	if err == nil {
 		t.Fatal("reporter received all statistics")
 	}
-	response, err := Send(ln.Addr().String(), Request{Type: "hello", ClientID: "editor", Secret: "editor-secret"}, Request{Type: "stats", All: true})
+	response, err := Send(
+		ln.Addr().String(),
+		Request{Type: "hello", ClientID: "editor", Secret: "editor-secret"},
+		Request{Type: "stats", All: true},
+	)
 	if err != nil || len(response.Stats) != 2 {
 		t.Fatalf("editor stats = %#v, %v", response, err)
 	}

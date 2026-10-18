@@ -25,6 +25,14 @@ type Receipt struct {
 	Score   float64 `json:"score,omitempty"`
 }
 
+type Submission struct {
+	ClientID   string
+	NoteID     string
+	Section    string
+	Topic      string
+	OccurredAt string
+}
+
 type Notification struct {
 	ID      int64     `json:"id"`
 	Kind    string    `json:"kind"`

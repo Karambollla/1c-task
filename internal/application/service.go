@@ -8,7 +8,7 @@ import (
 
 type Repository interface {
 	Authenticate(context.Context, string, string) (string, error)
-	Submit(context.Context, string, string, string, string, string) (domain.Receipt, error)
+	Submit(context.Context, domain.Submission) (domain.Receipt, error)
 	Pending(context.Context, string) ([]domain.Notification, error)
 	Ack(context.Context, string, int64) error
 	Stats(context.Context, string, bool) ([]domain.ClientStats, error)
@@ -26,8 +26,8 @@ func (s *Service) Authenticate(ctx context.Context, id, secret string) (string, 
 	return s.repo.Authenticate(ctx, id, secret)
 }
 
-func (s *Service) Submit(ctx context.Context, clientID, noteID, section, topic, occurredAt string) (domain.Receipt, error) {
-	return s.repo.Submit(ctx, clientID, noteID, section, topic, occurredAt)
+func (s *Service) Submit(ctx context.Context, submission domain.Submission) (domain.Receipt, error) {
+	return s.repo.Submit(ctx, submission)
 }
 
 func (s *Service) Pending(ctx context.Context, clientID string) ([]domain.Notification, error) {
