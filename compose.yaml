@@ -1,0 +1,21 @@
+services:
+  server:
+    build:
+      context: .
+      target: server
+    ports:
+      - "9000:9000"
+    volumes:
+      - edition-data:/data
+    command: ["serve", "--db", "/data/edition.db", "--listen", ":9000"]
+
+  client:
+    build:
+      context: .
+      target: client
+    profiles: ["client"]
+    depends_on:
+      - server
+
+volumes:
+  edition-data:

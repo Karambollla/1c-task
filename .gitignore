@@ -1,0 +1,5 @@
+edition.db
+edition.db-shm
+edition.db-wal
+data/
+bin/
